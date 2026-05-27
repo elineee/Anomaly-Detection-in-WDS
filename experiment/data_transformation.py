@@ -1,0 +1,331 @@
+import numpy as np
+import pandas as pd
+
+from experiment_config import ContaminationType
+
+CONTAMINANT_ID = {
+    ContaminationType.ARSENIC: "AsIII",
+    ContaminationType.PATHOGEN: "P"
+}
+
+def change_data_format(file_name: str, contaminants: list[ContaminationType], to_csv: bool = False):
+    """ 
+    Changes data format to obtain a new dataFrame with one row per node and timestep, with columns for chlorine concentration and contaminants concentration.
+    The original data format is a scada format with one column per node and species (e.g., "bulk_species_node [MG] at Chlorine @ 22" for chlorine concentration at node 22). 
+
+    Parameters:
+    - file_name: the path to the data file (csv) to transform
+    - contaminants: list of ContaminationType to specify which contaminants to extract from the data
+    - to_csv: whether to save the transformed data to a csv file
+    
+    Returns:
+    - new_df : a pandas DataFrame containing the transformed data with columns: timestep, node, chlorine_concentration, contaminant_concentration (e.g., arsenic_concentration)
+    """
+    df = pd.read_csv(file_name)
+    
+    elements_to_keep = ["Chlorine"]
+
+    new_data = {
+        "timestep": [],
+        "node": [],
+        "chlorine_concentration": [],    
+    }
+    
+    # Clean the dataframe to keep only relevant columns and create new columns for each contaminant
+    contaminants_mappings = {}
+    
+    for contaminant in contaminants:
+        contaminant_id = CONTAMINANT_ID[contaminant]
+        elements_to_keep.append(contaminant_id)
+        contaminants_mappings[contaminant] = contaminant_id
+        column_name = f'{contaminant.value}_concentration'
+        new_data[column_name] = []
+
+    df_cleaned = df[[column for column in df.columns if any(element in column for element in elements_to_keep)]]
+    nodes = {get_node_number(column) for column in df_cleaned.columns}
+        
+    # For each row in the cleaned dataframe, extract the timestep, node number, chlorine concentration and contaminant concentrations and store them in the new_data dictionary
+    for timestep, row in df_cleaned.iterrows():
+        for node in nodes:
+            chlorine_column = f'bulk_species_node [MG] at Chlorine @ {node}'
+            new_data["chlorine_concentration"].append(row[chlorine_column] if chlorine_column in df_cleaned.columns else np.nan)
+            new_data["timestep"].append(timestep)
+            new_data["node"].append(node)
+
+            for contaminant in contaminants_mappings:
+                contaminant_id = contaminants_mappings[contaminant]
+                contaminant_column = f'bulk_species_node [MG] at {contaminant_id} @ {node}'
+                column_name = f'{contaminant.value}_concentration'
+                new_data[column_name].append(row[contaminant_column] if contaminant_column in df_cleaned.columns else np.nan)
+    
+    new_df = pd.DataFrame(new_data)
+    
+    if to_csv:
+        new_df.to_csv(file_name.replace(".csv", "_cleaned.csv"), index=False)
+    
+    return new_df
+    
+
+def get_node_number(column_name: str):
+    """
+    Get the node number from a column name in the original data format (e.g., "bulk_species_node [MG] at Chlorine @ 22").
+
+    Parameters:
+    - column_name: the name of the column to extract the node number from
+    
+    Returns:
+    - the node number extracted from the column name
+    """
+    return str(column_name.split(" @ ")[1].split(" ")[0])
+
+
+def get_data_for_one_node(data: str | pd.DataFrame, node_number: str, to_csv: bool = False):
+    """ 
+    Extracts data for one node and returns it as a pandas DataFrame.
+
+    Parameters:
+    - data: a file path (str) or a pandas DataFrame containing the data
+    - node_number: the number of the node to extract
+    - to_csv: whether to save the extracted data to a csv file
+    
+    Returns:
+    - new_df: a pandas DataFrame containing the data for the specified node
+    """
+    
+    if isinstance(data, str):
+        df = pd.read_csv(data)
+    elif isinstance(data, pd.DataFrame):
+        df = data.copy()
+    else:
+        raise TypeError("`data` must be a file path (str) or a pandas DataFrame")
+    
+    new_df = df[df["node"] == node_number].copy()
+
+    if new_df.empty:
+        raise ValueError(f"No data found for node {node_number}")
+
+    if to_csv:
+        new_df.to_csv(f"node_{node_number}.csv", index=False)
+        
+    return new_df
+
+
+def create_features(df: pd.DataFrame, feature_column: str, window_size: int = 10):
+    """ 
+    Creates features for anomaly detection using a sliding window approach. 
+    For each time step, features are: current value, mean, std, min, max of the values in the sliding window, difference between current value and previous value, difference between current value and mean of the window, relative change between the last and first value in the window.
+
+    Parameters:
+    - df: a pandas DataFrame containing the data
+    - feature_column: the name of the column to use as feature
+    - window_size: the size of the sliding window
+    
+    Returns:
+    - a numpy array containing the features for each time step
+    """
+    for column in df.columns:
+        if feature_column in column:
+            feature_column = column
+            break
+    
+    feature = df[feature_column].values
+    
+    features = []
+    
+    for i in range(window_size, len(feature)):
+        window = feature[i-window_size:i]
+        
+        features.append([
+            feature[i],
+            window.mean(),
+            window.std(),
+            window.min(),
+            window.max(),
+            feature[i] - feature[i-1],
+            feature[i] - window.mean(),
+            (window[-1] - window[0]) / (window[0] + 1e-9), # relative change between the last and first value in the window, it can be useful to detect sudden changes in the feature value
+        ])
+    
+    return np.array(features)
+
+
+def create_extended_features(df: pd.DataFrame, feature_column: str, window_size: int = 10, stats: bool = True):
+    """
+    Creates extended features for anomaly detection using a sliding window approach.
+    For each time step, features are: the values of the feature column in the sliding window, mean, std, slope and delta.
+    
+    Parameters:
+    - df: a pandas DataFrame containing the data
+    - feature_column: the name of the column to use as feature
+    - window_size: the size of the sliding window
+    - stats: whether to include statistics (mean, std, slope, delta) in the extended features
+    Returns:
+    - a numpy array containing the extended features for each time step
+    """
+    for column in df.columns:
+        if feature_column in column:
+            feature_column = column
+            break
+    
+    feature = df[feature_column].values
+    features = []
+    
+    for i in range(window_size, len(feature)):
+        window = feature[i-window_size:i]
+        
+        if stats:
+        
+            current_value = feature[i]
+            mean = window.mean()
+            std = window.std()
+            slope = window[-1] - window[0]
+            delta = feature[i] - feature[i-1]
+            
+            row = np.concatenate([
+                window,              
+                [mean, std, slope, delta, current_value]
+            ])
+        else:
+            row = window
+        
+        features.append(row)
+    
+    return np.array(features)
+    
+
+def calculate_labels(df: pd.DataFrame, contaminant_column: str, window_size: int): 
+    """ 
+    Calculates labels for anomaly detection. For each time step, the label is -1 if the value of the contaminant column is an anomaly (> 0) and 1 otherwise.
+
+    Note: It only handles one contaminant at a time. Multiple contaminants require separate calls. 
+
+    Parameters:
+    - df: a pandas DataFrame containing the data
+    - contaminant_column: the name of the contaminant column to use as feature
+    - window_size: the size of the sliding window
+    
+    Returns:
+    - labels: a np.array containing the labels for each time step (-1 if anomaly, 1 if normal)
+    """
+    
+    matched_column = None
+    for column in df.columns:
+        if contaminant_column in column:
+            matched_column = column
+            break
+
+    if matched_column is None:
+        raise ValueError("No column matching in the dataFrame")
+    
+    feature = df[matched_column].values
+    labels = []
+    
+    for i in range(window_size, len(feature)):
+        if feature[i] > 0: 
+            labels.append(-1)
+        else:
+            labels.append(1)
+
+    labels = np.array(labels)
+    
+    return labels
+
+
+def calculate_labels_alarm(df: pd.DataFrame, contaminant_column: str, window_size: int):
+    """ 
+    Calculates labels for anomaly detection. Labels are -1 from the moment the value of the contaminant column becomes an anomaly (> 0) and 1 before that.
+
+    Parameters:
+    - df: a pandas DataFrame containing the data
+    - contaminant_column: the name of the contaminant column to use as feature
+    - window_size: the size of the sliding window
+    
+    Returns:
+    - labels: a np.array containing the labels for each time step (-1 if anomaly, 1 if normal)
+    """
+    
+    matched_column = None
+    for column in df.columns:
+        if contaminant_column in column:
+            matched_column = column
+            break
+
+    if matched_column is None:
+        raise ValueError("No column matching in the dataFrame")
+    
+    feature = df[matched_column].values
+    labels = []
+    
+    anomaly_started = False
+    for i in range(window_size, len(feature)):
+        if feature[i] > 0: 
+            anomaly_started = True
+        
+        if anomaly_started:
+            labels.append(-1)
+        else:
+            labels.append(1)
+
+    labels = np.array(labels)
+    
+    return labels
+
+
+def get_labels(label_array, window=3, anomaly=True):
+    """ 
+    Converts a label array into a list where each change point or anomaly is labeled as 1 and normal point as 0.
+
+    Two modes:
+    - anomaly=True: labels each point as 1 if its value exceeds 0.
+    - anomaly=False: detects change points from 0 to >0.  A window is created around each change point to account for detection delays (the window size is two times longer after than before the change point).
+    
+    Parameters:
+    - label_array: a numpy array containing the original labels (-1 for anomaly, 1 for normal)
+    - window: the size of the window around each change point (default is 3, which means that 3 points before and 6 points after the change point will be labeled as 1)
+    - anomaly : whether we want to detect anomalies (True) or change points (False) 
+    
+    Returns:
+    - a list containing the new labels, where each change point/anomaly is labeled as 1 and normal point as 0.
+    """
+    
+    y = np.zeros(len(label_array), dtype=int) 
+    
+    for i in range(len(label_array)):
+        if anomaly : 
+            if label_array[i] > 0:
+                y[i] = 1 
+        else :
+            if i == 0 and label_array[i] > 0:
+                start = 0
+                end = min(len(label_array), i + 2* window + 1)  
+                y[start:end] = 1
+
+            if i > 0 and label_array[i-1] == 0 and label_array[i] > 0:
+                start = max(0, i - window)  
+                end = min(len(label_array), i + 2 * window + 1)  
+                y[start:end] = 1
+    
+    return y.tolist()
+
+
+def remove_first_x_days(df: pd.DataFrame, days_to_remove: int):
+    """ 
+    Removes the first x days of data from the dataframe. 
+
+    Parameters:
+    - df: a pandas DataFrame containing the data with a "timestep" column
+    - days_to_remove: the number of days to remove from the beginning of the dataframe
+    
+    Returns:
+    - new_df: a pandas DataFrame containing the data with the first x days removed
+    """
+    node = df["node"].iloc[0]
+    if "dist" in node:
+        # 5 minutes timestep, so 288 timesteps per day 
+        timesteps_to_remove = 288 * days_to_remove
+    else:
+        timesteps_to_remove = 48 * days_to_remove # 48 timesteps per day (since one timestep is 30 minutes)
+    
+    new_df = df[df["timestep"] >= timesteps_to_remove].copy()
+
+    return new_df

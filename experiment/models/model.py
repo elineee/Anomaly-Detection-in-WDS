@@ -1,0 +1,140 @@
+from abc import ABC, abstractmethod
+import numpy as np
+import pandas as pd
+from typing import List
+from experiment_config import ExperimentConfig
+from data_transformation import get_data_for_one_node, change_data_format, create_features, create_extended_features, remove_first_x_days, calculate_labels
+class AnomalyModel(ABC):
+    """ 
+    Abstract class for anomaly detection models. 
+    All specific models should inherit from this class and implement the "get_results" method.
+    """
+
+    def __init__(self, config: ExperimentConfig):
+        self.config = config
+
+
+    def load_and_filter_as_dict(self, file_path: str, nodes: List[int]):
+        """
+        Loads the dataset from the given file path and filters it based on the specified nodes. 
+        Return a dictionary of dataframes corresponding to each node.
+        
+        Parameters:
+        - file_path: the path to the data file (csv) to load
+        - nodes: a list of node numbers to filter the data by
+        
+        Returns:
+        - dfs: a dictionary where keys are node ids (str) and values are pandas DataFrames, each containing the data for one of the specified nodes
+        """
+
+        df_all = change_data_format(file_path, self.config.contaminants, to_csv=False)  # returns rows with columns: timestep, node, chlorine_concentration, arsenic_concentration
+        
+        dfs = {}
+        
+        for node in nodes:
+            df_node = get_data_for_one_node(df_all, node, to_csv=False)
+            dfs[str(node)] = df_node
+        
+        return dfs
+
+
+    def _group_dfs_by_node(self, files: List[str]):
+        """
+        Groups dataframes by node for the given list of files. 
+
+        Parameters:
+        - files: list of files to load and group by node
+
+        Returns:
+        -  group : dict where keys are node ids (str) and values are lists of dataframes for that node.
+        """
+        group = {}
+
+        for f in files:
+            dfs = self.load_and_filter_as_dict(f, self.config.nodes)
+
+            for node, df in dfs.items():
+                if node not in group:
+                    group[node] = []
+                group[node].append(df)
+
+        return group
+    
+
+    def load_datasets_as_dict(self):
+        """
+        Returns dict of dataframes per node for clean and contaminated files.
+        
+        Returns:
+        - example_dfs: dict of dataframes for each example file (clean data), with node as key
+        - contaminated_dfs: dict of dataframes for each contaminated file, with node as key
+        """
+        example_dfs = {}
+
+        if self.config.example_files is not None:
+            example_dfs = self._group_dfs_by_node(self.config.example_files)
+
+        contaminated_dfs = self._group_dfs_by_node(self.config.contaminated_files)
+
+        return example_dfs, contaminated_dfs
+    
+
+    def _prepare_dataset(self, dfs: list[pd.DataFrame], feature_type="stats" , stats = True):
+        """
+        Cleans datasets and generates features (statistical or extended) using sliding windows.
+
+        Parameters:
+        - dfs: List of pandas DataFrames
+        - feature_type: "stats" for create_features, "extended" for create_extended_features
+        - stats : True if stats are activated, False otherwise 
+        
+        Returns:
+        - datasets: cleaned datasets
+        - windows: array of features for each timestep
+        """
+        datasets = []
+        windows = []
+
+        for df in dfs:
+            df_clean = remove_first_x_days(df, 3)
+            datasets.append(df_clean)
+
+            if feature_type == "extended":
+                features = create_extended_features(df_clean, self.config.disinfectant.value, self.config.window_size, stats=stats)
+            else:
+                features = create_features(df_clean, self.config.disinfectant.value, self.config.window_size)
+
+            windows.extend(features)
+
+        return datasets, np.array(windows)
+    
+    
+    def _post_predictions(self, y_pred):
+        """
+        Does post predictions on the predicted labels 
+
+        Parameters: 
+        - y_pred: predicted labels
+        """
+        return y_pred
+
+
+    def _calculate_labels(self, df, contaminant, window_size):
+        """
+        Gets the method to calculate labels. 
+        """
+        return calculate_labels(df, contaminant, window_size)
+    
+    @abstractmethod
+    def get_results(self):
+        """ 
+        Returns the results of the experiment as a dictionary containing the true labels and predicted labels for each node. 
+    
+        Returns:
+          y_true: true labels 
+          y_pred: predicted labels
+         """
+        pass
+
+
+        
