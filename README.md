@@ -1,55 +1,30 @@
-# Types of data
-There are three types of data in the folder data: 
+# Anomaly Detection in Water Distribution Systems
 
-- `data_net1`: data generated with the Net1 network, a small network with few nodes.
-- `data_hanoi`: data generated with the Hanoi network, a medium-sized network.
-- `data_cy`: data generated with the CY-DBP network, a large and more complex network, where not all nodes are relevant for anomaly detection.
+This repository contains the code developed for the paper:
+**"Anomaly Detection in Changing Environments -- A Case Study on Contamination Detection in Water Distribution Systems"** 
 
-Notes: 
-- In the Hanoi and the CY-DBP network, contamination cannot be directly observed at the injection node itself.
-- In the CY-DBP network, some nodes never receive chlorine, making anomaly detection impossible on these nodes.
+## Repository Structure
 
+- `CY/`: data and scripts related to the CY-DBP network, required to generate data.
+- `data/`: datasets generated for the conducted experiments.
+- `experiment/`: main experiment scripts and configurations. See the [README](experiment/README.md) for details on how to run experiments.
+- `Hanoi/`: data and scripts related to the Hanoi network, required to generate data.
+- `Net1/`: data and scripts related to the Net1 network, required to generate data.
+- `results/`: results from the experiments.
+- `trained_model/`: saved trained models.
 
-# Running experiments 
+## Installation
 
-Several `main_...` files are already provided with all experiments conducted in this work.
-
-To reproduce the experiments:
-- Open the corresponding `main_...` file.
-- Run the file.
-
-
-Each configuration needs: 
-
-- `config_name`: name of the experiment configuration.
-- `example_files`: list of clean data files.
-- `contaminated_files`: list of contaminated data files.
-    For CNN models, several contaminated files are required. The last contaminated file is used for testing.
-- `nodes`: list of nodes to analyze for contamination detection.
-    For `data_net1` and `data_hanoi`, node ids are represented as strings containing only the node number. 
-    For `data_cy`, node ids are represented as strings containing "dist" following by the node number.
-- `window_size`: size of the window used by the model.
-- `model_name`: selected model from the available ones in `ModelName`.
-- `contaminants`: contaminant type.
-    By default, it is arsenic (for `data_net1` and `data_hanoi`). For `data_cy`, it must be set to `pathogen`.
-
-
-# Example of a configuration
-```python
-    ExperimentConfig(
-    config_name="CNN_VAE",
-    example_files=CLEAN_FILES,
-    contaminated_files=CONTAMINATED_FILES,
-    nodes=["dist33"],
-    window_size=350, 
-    model_name=ModelName.CNN_VAE,
-    model_params={},
-    contaminants=[ContaminationType.PATHOGEN]
-)
+```bash
+pip install -r requirements.txt
 ```
 
-# Names of models
+## Reference
 
-- CNN corresponds to SVR-CNN 
-- CNN_VAE corresponds to VAE-CNN
+This repository was originally forked from: [1st AI for Drinking Water Chlorination Challenge @ IJCAI-2025](https://github.com/WaterFutures/AI-for-Drinking-Water-Chlorination-Challenge-IJCAI-25).
+The rest of the code was mainly developed by Aurélie Genot and Eline Mota (2026) for the paper: "Anomaly Detection in Changing Environments -- A Case Study on Contamination Detection in Water Distribution Systems" 
 
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
